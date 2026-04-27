@@ -99,6 +99,22 @@ button:active{transform:scale(0.98)}
 @keyframes flash{0%{background:#fffbe6}100%{background:transparent}}
 .flash{animation:flash 0.5s ease}
 
+/* 파싱 미인식 필드 빨간 음영 */
+.empty-warn input,
+.empty-warn select,
+.empty-warn textarea{
+  background:#fff0f0 !important;
+  border:1px solid #ffb3b3 !important;
+  outline:none;
+}
+.empty-warn-tag{
+  display:inline-block;
+  font-size:9px;font-weight:700;color:#c0392b;
+  background:#fff0f0;border:1px solid #ffb3b3;
+  border-radius:3px;padding:1px 5px;margin-left:4px;
+  vertical-align:middle;
+}
+
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:#dde3ea;border-radius:2px}
 </style>
@@ -621,6 +637,9 @@ function doparse(){
   g('emp').style.display='none';
   g('form').style.display='block';
   g('btnSend').disabled=false;
+
+  // ✅ 파싱 후 빈 필드 빨간 음영 표시
+  highlightEmpty();
 }
 
 function buildGuestRows(n,names){
@@ -650,11 +669,27 @@ function calcPickupSending(){
 
   // 픽업 호텔이 X이거나 비어있으면 Pickup Date도 X
   var pickupIsX=(pickupHotel.toUpperCase()==='X'||pickupHotel==='');
-  g('f-pickupdate').value = pickupIsX ? 'X' : ((dep&&dep!=='X') ? dep : 'X');
+
+  // ⭐ 별표 감지: 픽업 호텔에 ⭐ ★ * 있으면 Pickup Date = Departure 전날
+  var hasStar=/[⭐★\*]/.test(pickupHotel);
+
+  if(pickupIsX){
+    g('f-pickupdate').value='X';
+  } else if(hasStar && dep && dep!=='X'){
+    // Departure 전날 계산
+    var depDay=new Date(dep);
+    depDay.setDate(depDay.getDate()-1);
+    var y=depDay.getFullYear();
+    var m=String(depDay.getMonth()+1).padStart(2,'0');
+    var d=String(depDay.getDate()).padStart(2,'0');
+    g('f-pickupdate').value=y+'-'+m+'-'+d;
+  } else {
+    g('f-pickupdate').value=(dep&&dep!=='X')?dep:'X';
+  }
 
   // 샌딩 호텔이 X이거나 비어있으면 Drop-off Date도 X
   var dropoffIsX=(dropoffHotel.toUpperCase()==='X'||dropoffHotel==='');
-  g('f-dropoffdate').value = dropoffIsX ? 'X' : ((ret&&ret!=='X') ? ret : 'X');
+  g('f-dropoffdate').value=dropoffIsX?'X':((ret&&ret!=='X')?ret:'X');
 }
 
 function calcAll(){
@@ -847,6 +882,88 @@ function sendToSheet(){
     statusEl.innerHTML='<span style="color:#e17055;font-size:11px">❌ 전송 실패: '+err.message+'</span>';
     setTimeout(function(){statusEl.innerHTML='';},5000);
   });
+}
+
+function highlightEmpty(){
+  var prod = g('f-product').value;
+  var dep  = g('f-depdate').value.trim();
+  var ret  = g('f-retdate').value.trim();
+  var isFerry = (prod==='길리페리');
+
+  // 체크할 필드 목록 정의
+  // [필드id, 표시여부 조건함수]
+  var checks = [
+    // 날짜: 왕복이면 dep+ret 둘 다, 편도면 둘 중 하나라도 있으면 OK
+    {id:'f-depdate',  show: function(){ return isFerry; },
+      ok: function(){ return g('f-depdate').value.trim()!==''; }},
+    {id:'f-retdate',  show: function(){ return isFerry; },
+      ok: function(){ return g('f-retdate').value.trim()!==''; }},
+    {id:'f-deptime',  show: function(){ return g('f-depdate').value.trim()!==''; },
+      ok: function(){ return g('f-deptime').value.trim()!==''; }},
+    {id:'f-rettime',  show: function(){ return g('f-retdate').value.trim()!==''; },
+      ok: function(){ return g('f-rettime').value.trim()!==''; }},
+    {id:'f-from',     show: function(){ return isFerry; },
+      ok: function(){ return g('f-from').value.trim()!==''; }},
+    {id:'f-to',       show: function(){ return isFerry; },
+      ok: function(){ return g('f-to').value.trim()!==''; }},
+    {id:'f-pax',      show: function(){ return true; },
+      ok: function(){ return g('f-pax').value!==''; }},
+    {id:'f-phone',    show: function(){ return true; },
+      ok: function(){ return g('f-phone').value.trim()!==''; }},
+    {id:'f-cost',     show: function(){ return true; },
+      ok: function(){ return g('f-cost').value.trim()!==''; }},
+    {id:'f-pickup',   show: function(){ return g('f-depdate').value.trim()!==''; },
+      ok: function(){ return g('f-pickup').value.trim()!==''; }},
+    {id:'f-dropoff',  show: function(){ return g('f-retdate').value.trim()!==''; },
+      ok: function(){ return g('f-dropoff').value.trim()!==''; }},
+  ];
+
+  // 이름 필드 체크
+  var guestOk = false;
+  for(var i=0;i<20;i++){
+    var el=g('guest-'+i);
+    if(el && el.value.trim()!==''){guestOk=true;break;}
+  }
+
+  // 기존 음영 초기화
+  document.querySelectorAll('.empty-warn').forEach(function(el){
+    el.classList.remove('empty-warn');
+  });
+  document.querySelectorAll('.empty-warn-tag').forEach(function(el){
+    el.remove();
+  });
+
+  // 각 필드 체크
+  checks.forEach(function(c){
+    if(!c.show()) return;
+    if(!c.ok()){
+      var el = g(c.id);
+      if(!el) return;
+      var row = el.closest('tr');
+      if(row) row.classList.add('empty-warn');
+    }
+  });
+
+  // 이름 체크
+  if(!guestOk){
+    var nameRow = g('guestRows');
+    if(nameRow){
+      var tr = nameRow.closest('tr');
+      if(tr) tr.classList.add('empty-warn');
+    }
+  }
+
+  // 이름 개별 체크 (파싱됐지만 빈 이름칸)
+  for(var j=0;j<20;j++){
+    var ge=g('guest-'+j);
+    if(ge && ge.value.trim()===''){
+      ge.style.background='#fff0f0';
+      ge.style.border='1px solid #ffb3b3';
+    } else if(ge){
+      ge.style.background='';
+      ge.style.border='';
+    }
+  }
 }
 
 window.onload=function(){buildGuestRows(2,[]);onProductChange();};
