@@ -469,7 +469,7 @@ function doparse(){
   // Departure 블록 = Return 이전
   var depBlock = returnBlockMatch ? raw.substring(0, raw.indexOf(returnBlockMatch[0])) : raw;
 
-  // Departure Date/Time: "Departure Date:", "date:" 단독, "Tour Date:" 모두 허용
+  // Departure Date/Time: "Departure Date:", "date:" 단독, "Tour Date:", "- Date:" 블록형 모두 허용
   var depDate = fixdate(
     flexGrab(['(?:Departure\\s*)?(?:Tour\\s*)?Date'], depBlock) ||
     flexGrab(['Departure\\s*Date'], raw)
@@ -477,7 +477,7 @@ function doparse(){
   var depTime = (
     flexGrab(['(?:Departure\\s*)?(?:Start\\s*)?Time'], depBlock) ||
     flexGrab(['Departure\\s*Time', 'Start\\s*Time'], raw)
-  ).replace(/\t/g,'').trim();
+  ).replace(/\t/g,'').replace(/\s*(AM|PM)/i,'$1').trim();
 
   // Return Date/Time: Return 블록 안에서 파싱
   var retDate = fixdate(
@@ -485,12 +485,11 @@ function doparse(){
   );
   var retTime = (
     returnBlock ? (flexGrab(['Time'], returnBlock) || flexGrab(['Return\\s*Time'], raw)) : flexGrab(['Return\\s*Time'], raw)
-  ).replace(/\t/g,'').trim();
+  ).replace(/\t/g,'').replace(/\s*(AM|PM)/i,'$1').trim();
 
   // Return 블록에서 출도 회사 추가 파싱
   var retCompany = returnBlock ? flexGrab(['(?:Boat\\s*)?Company'], returnBlock).replace(/[\(\)\t\*]/g,'').trim() : '';
   if(retCompany && !splitMode){
-    // Return 블록에 다른 회사가 있으면 입/출도 분리
     var depCompanyCheck = flexGrab(['(?:Boat\\s*)?Company'], depBlock).replace(/[\(\)\t\*]/g,'').trim();
     if(depCompanyCheck && retCompany && depCompanyCheck.toUpperCase().replace(/\s/g,'') !== retCompany.toUpperCase().replace(/\s/g,'')){
       inComp = depCompanyCheck;
@@ -501,41 +500,57 @@ function doparse(){
     }
   }
 
-  var from = flexGrab(['FROM'], raw).replace(/\t/g,'').trim();
-  // TO: 콜론 없는 경우도 처리
-  var to = (function(){
-    var m = raw.match(/\bTO\s*[:\-]?\s*([^\n\r]+)/i);
-    return m ? m[1].trim() : '';
-  })().replace(/\t/g,'').trim();
+  // FROM/TO - Route: Padangbai → Gili 형식도 처리
+  var from = '', to = '';
+  var routeM = raw.match(/Route\s*[:\-]?\s*([^\n\r→>]+)\s*[→>]\s*([^\n\r]+)/i);
+  if(routeM){
+    from = routeM[1].trim();
+    to   = routeM[2].trim();
+  } else {
+    from = flexGrab(['FROM'], raw).replace(/\t/g,'').trim();
+    to = (function(){
+      var m = raw.match(/\bTO\s*[:\-]?\s*([^\n\r]+)/i);
+      return m ? m[1].trim() : '';
+    })().replace(/\t/g,'').trim();
+  }
 
   var pax = grab([/Number\s*of\s*Guests?\s*[:\-\t;]*\s*(\d+)/i], raw);
   var phone = grab([/Phone\s*(?:Number)?\s*[:\-\t;]*\s*([^\n\r]+)/i], raw).replace(/\t/g,'').trim();
-  var payment = cleanCost(grab([
+  // 전화번호 여러개면 첫번째만
+  phone = phone.split('/')[0].trim();
+
+  // 금액: K형식 + IDR 숫자형(2,150,000 IDR) 둘 다 처리
+  var paymentRaw = grab([
     /TOTAL\s*PAYMENT\s*[:\-\t;]*\s*([^\n\r\*]+)/i,
     /TOTAL\s*[:\-\t;]*\s*([^\n\r\*]+)/i
-  ], raw));
+  ], raw);
+  var payment = cleanCost(paymentRaw);
+  if(!payment){
+    // IDR 숫자형: 2,150,000 IDR → 2,150K
+    var idrM = paymentRaw.match(/([\d,]+)\s*(?:IDR|idr)/);
+    if(idrM){
+      var num = parseInt(idrM[1].replace(/,/g,''));
+      payment = Math.round(num/1000)+'K';
+    }
+  }
 
-  // 픽업/샌딩 - 줄바꿈, at Bali 있든 없든, Pickup/Pick-up 둘 다
+  // 픽업/샌딩 - "- Pick-up in Bali:", "Pick-up hotel at Bali:" 등 다양한 형식
   var rawNorm = raw.replace(/\r/g,'');
   var pickup = (function(){
     var m;
-    m = rawNorm.match(/Pick[-\s]?up\s*hotel[\s\S]*?at\s*Bali\s*[:\-]?\s*([^\n]+)/i);
-    if(m && m[1].trim()) return m[1].trim();
+    m = rawNorm.match(/[-\s]*Pick[-\s]?up\s*(?:in|hotel)?[\s\S]*?(?:Bali|at\s*Bali)?\s*[:\-]?\s*([^\n]+)/i);
+    if(m && m[1].trim() && !/^at\s*bali/i.test(m[1].trim())) return m[1].trim();
     m = rawNorm.match(/Pick[-\s]?up\s*hotel\s*\n\s*at\s*Bali\s*[:\-]?\s*([^\n]+)/i);
     if(m && m[1].trim()) return m[1].trim();
-    m = rawNorm.match(/Pick[-\s]?up\s*hotel\s*[:\-]?\s*([^\n]+)/i);
-    if(m && m[1].trim() && !/^at\s*bali/i.test(m[1].trim())) return m[1].trim();
     return '';
   })().replace(/\t/g,'').trim();
 
   var dropoff = (function(){
     var m;
-    m = rawNorm.match(/Drop[-\s]?off\s*hotel[\s\S]*?at\s*Bali\s*[:\-]?\s*([^\n]+)/i);
-    if(m && m[1].trim()) return m[1].trim();
+    m = rawNorm.match(/[-\s]*Drop[-\s]?off\s*(?:in|hotel)?[\s\S]*?(?:Bali|at\s*Bali)?\s*[:\-]?\s*([^\n]+)/i);
+    if(m && m[1].trim() && !/^at\s*bali/i.test(m[1].trim())) return m[1].trim();
     m = rawNorm.match(/Drop[-\s]?off\s*hotel\s*\n\s*at\s*Bali\s*[:\-]?\s*([^\n]+)/i);
     if(m && m[1].trim()) return m[1].trim();
-    m = rawNorm.match(/Drop[-\s]?off\s*hotel\s*[:\-]?\s*([^\n]+)/i);
-    if(m && m[1].trim() && !/^at\s*bali/i.test(m[1].trim())) return m[1].trim();
     return '';
   })().replace(/\t/g,'').trim();
 
@@ -857,8 +872,8 @@ function sendToSheet(){
     sendingHotel: sendingHotelVal,
     car:          g('f-car').value||'',
     cost:         g('f-cost').value||'',
-    pickupDate:   depOk ? dep : 'X',
-    dropoffDate:  retOk ? ret : 'X',
+    pickupDate:   g('f-pickupdate').value||'X',
+    dropoffDate:  g('f-dropoffdate').value||'X',
     expectedProfit: g('f-profit').value||'',
     contractDate: g('f-contract').value,
     tripDuration: g('f-trip').value||'',
