@@ -755,16 +755,13 @@ function calcPickupSending(){
   var pickupHotel=g('f-pickup').value.trim();
   var dropoffHotel=g('f-dropoff').value.trim();
 
-  // 픽업 호텔이 X이거나 비어있으면 Pickup Date도 X
-  var pickupIsX=(pickupHotel.toUpperCase()==='X'||pickupHotel==='');
-
   // ⭐ 별표 감지: 픽업 호텔에 ⭐ ★ * 있으면 Pickup Date = Departure 전날
   var hasStar=/[⭐★\*]/.test(pickupHotel);
 
-  if(pickupIsX){
+  // Pickup Date: 호텔 없어도 dep 있으면 채움 (별표면 전날)
+  if(!dep || dep==='X'){
     g('f-pickupdate').value='X';
-  } else if(hasStar && dep && dep!=='X'){
-    // Departure 전날 계산
+  } else if(hasStar){
     var depDay=new Date(dep);
     depDay.setDate(depDay.getDate()-1);
     var y=depDay.getFullYear();
@@ -772,12 +769,15 @@ function calcPickupSending(){
     var d=String(depDay.getDate()).padStart(2,'0');
     g('f-pickupdate').value=y+'-'+m+'-'+d;
   } else {
-    g('f-pickupdate').value=(dep&&dep!=='X')?dep:'X';
+    g('f-pickupdate').value=dep;
   }
 
-  // 샌딩 호텔이 X이거나 비어있으면 Drop-off Date도 X
-  var dropoffIsX=(dropoffHotel.toUpperCase()==='X'||dropoffHotel==='');
-  g('f-dropoffdate').value=dropoffIsX?'X':((ret&&ret!=='X')?ret:'X');
+  // Drop-off Date: 호텔 없어도 ret 있으면 채움
+  if(!ret || ret==='X'){
+    g('f-dropoffdate').value='X';
+  } else {
+    g('f-dropoffdate').value=ret;
+  }
 }
 
 function calcAll(){
