@@ -430,19 +430,21 @@ function doparse(){
   // 회사 파싱
   var companyRaw=grab([/BOAT\s*COMPANY\s*[:\t]+\s*([^\n\r]+)/i],raw).replace(/[\(\)\t\*]/g,'').trim();
   var inComp='',outComp='';splitMode=false;
-  // IN: WAHANA / OUT: WIJAYA 또는 IN WAHANA / OUT WIJAYA 등 다양한 형식
   var inOutM=companyRaw.match(/IN\s*[:\-]?\s*([A-Za-z\s]+?)\s*\/\s*OUT\s*[:\-]?\s*([A-Za-z\s]+?)$/i);
   if(inOutM){
-    inComp=inOutM[1].trim();
-    outComp=inOutM[2].trim();
-    splitMode=true;
+    inComp=inOutM[1].trim(); outComp=inOutM[2].trim(); splitMode=true;
   } else if(companyRaw.includes('/')){
     var pts=companyRaw.split('/');
     inComp=pts[0].trim().replace(/^IN\s*[:\-]?\s*/i,'');
     outComp=pts[1].trim().replace(/^OUT\s*[:\-]?\s*/i,'');
     splitMode=(inComp.toUpperCase().replace(/\s/g,'')!==outComp.toUpperCase().replace(/\s/g,''));
+  } else if(companyRaw.includes(',')){
+    // "WAHANA, EKA JAYA" 쉼표 구분 → 입도/출도 분리
+    var cpts=companyRaw.split(',');
+    inComp=cpts[0].trim(); outComp=cpts[1].trim();
+    splitMode=(inComp.toUpperCase().replace(/\s/g,'')!==outComp.toUpperCase().replace(/\s/g,''));
   } else {
-    inComp=companyRaw;outComp=companyRaw;
+    inComp=companyRaw; outComp=companyRaw;
   }
 
   if(splitMode){
@@ -473,10 +475,10 @@ function doparse(){
     flexGrab(['(?:Departure\\s*)?(?:Tour\\s*)?Date'], depBlock) ||
     flexGrab(['Departure\\s*Date'], raw)
   );
-  var depTime = (
+  var depTime = cleanTime(
     flexGrab(['(?:Departure\\s*)?(?:Start\\s*)?Time'], depBlock) ||
     flexGrab(['Departure\\s*Time', 'Start\\s*Time'], raw)
-  ).replace(/\t/g,'').replace(/\s*(AM|PM)/i,'$1').trim();
+  );
 
   // Return Date: 값이 다음 줄에 있는 경우도 처리
   var retDateRaw = '';
@@ -490,9 +492,9 @@ function doparse(){
   }
   var retDate = fixdate(retDateRaw);
 
-  var retTime = (
+  var retTime = cleanTime(
     returnBlock ? (flexGrab(['Time'], returnBlock) || flexGrab(['Return\\s*Time'], raw)) : flexGrab(['Return\\s*Time'], raw)
-  ).replace(/\t/g,'').replace(/\s*(AM|PM)/i,'$1').trim();
+  );
 
   // Return 블록에서 출도 회사 추가 파싱
   var retCompany = returnBlock ? flexGrab(['(?:Boat\\s*)?Company'], returnBlock).replace(/[\(\)\t\*]/g,'').trim() : '';
@@ -694,6 +696,57 @@ function onPaxChange(){
   buildGuestRows(n,ex);calcAll();
 }
 
+function cleanTime(t){
+  if(!t) return '';
+  t = t.trim().replace(/\t/g,'');
+
+  // 괄호 안 내용 제거: "13:15 (WAHANA)" → "13:15"
+  t = t.replace(/\s*[\(\[【][^\)\]】]*[\)\]】]/g,'').trim();
+
+  // AM/PM 감지
+  var ampm = '';
+  var amMatch = t.match(/\b(AM|PM)\b/i);
+  if(amMatch){
+    ampm = amMatch[1].toUpperCase();
+    // AM/PM 앞까지만 추출: "8:30 PM SEMAYA ONE" → "8:30"
+    t = t.substring(0, amMatch.index).trim();
+  } else {
+    // AM/PM 없으면 숫자:숫자 or 숫자 패턴만 추출 (뒤 텍스트 제거)
+    // "13:15 WAHANA" → "13:15"
+    var timeOnlyM = t.match(/^(\d{1,2}:\d{2}|\d{3,4})/);
+    if(timeOnlyM) t = timeOnlyM[1];
+  }
+
+  var hour=0, min=0;
+
+  // 콜론 있는 경우: "8:30", "13:15"
+  var colonM = t.match(/^(\d{1,2}):(\d{2})$/);
+  if(colonM){
+    hour = parseInt(colonM[1]);
+    min  = parseInt(colonM[2]);
+  } else {
+    // 콜론 없는 숫자: "830" → 08:30 / "1345" → 13:45
+    var numM = t.match(/^(\d{3,4})$/);
+    if(numM){
+      var raw = numM[1];
+      min  = parseInt(raw.slice(-2));
+      hour = parseInt(raw.slice(0,-2))||0;
+    } else {
+      return t;
+    }
+  }
+
+  // AM/PM → 24시간 변환
+  if(ampm==='PM' && hour!==12) hour += 12;
+  if(ampm==='AM' && hour===12) hour = 0;
+
+  // 범위 보정
+  if(hour>23) hour=23;
+  if(min>59)  min=59;
+
+  return String(hour).padStart(2,'0')+':'+String(min).padStart(2,'0');
+}
+
 function getCars(){var n=parseInt(g('f-pax').value)||0;return n<=4?1:n<=8?2:3;}
 
 function calcPickupSending(){
@@ -866,16 +919,19 @@ function sendToSheet(){
   var toVal   = isFerry ? (g('f-to').value||'')   : 'X';
 
   // 귀환편이면 pickup/dropoff 스왑
-  // depOk=false, retOk=true → 귀환편
-  // pickup hotel = 귀환 픽업(길리에서), dropoff = 도착지(발리)
   var pickupHotelVal, sendingHotelVal;
   if(isReturnOnly){
-    pickupHotelVal  = g('f-pickup').value||'X';   // 길리 픽업
-    sendingHotelVal = g('f-dropoff').value||'X';  // 발리 샌딩
+    pickupHotelVal  = g('f-pickup').value.trim()||'X';
+    sendingHotelVal = g('f-dropoff').value.trim()||'X';
   } else {
-    pickupHotelVal  = depOk ? (g('f-pickup').value||'') : 'X';
-    sendingHotelVal = retOk ? (g('f-dropoff').value||'') : 'X';
+    pickupHotelVal  = depOk ? (g('f-pickup').value.trim()||'X') : 'X';
+    sendingHotelVal = retOk ? (g('f-dropoff').value.trim()||'X') : 'X';
   }
+
+  // 빈값 → X 처리 헬퍼
+  function xIfEmpty(v){ return (v&&v.trim()&&v.trim().toUpperCase()!=='X') ? v.trim() : 'X'; }
+  pickupHotelVal  = xIfEmpty(pickupHotelVal);
+  sendingHotelVal = xIfEmpty(sendingHotelVal);
 
   var payload={
     product:    prod,
